@@ -41,9 +41,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run validation checks
+      - name: Write files_json to temp file
         run: |
-          python3 scripts/validate.py '${{ needs.detect.outputs.files_json }}'
+          # Write JSON to a file to avoid shell quoting issues entirely
+          cat << 'JSON_DELIM' > /tmp/files.json
+          ${{ needs.detect.outputs.files_json }}
+          JSON_DELIM
+
+      - name: Run validation checks
+        run: python3 scripts/validate.py /tmp/files.json
 
   # ─────────────────────────────────────────────────────────────────────────
   # JOB 3: Merge — assemble parts → original file → upload as artifact
@@ -59,9 +65,14 @@ jobs:
         with:
           token: ${{ secrets.STORAGE_REPO_TOKEN }}
 
-      - name: Merge all complete file groups
+      - name: Write files_json to temp file
         run: |
-          python3 scripts/merge.py '${{ needs.detect.outputs.files_json }}'
+          cat << 'JSON_DELIM' > /tmp/files.json
+          ${{ needs.detect.outputs.files_json }}
+          JSON_DELIM
+
+      - name: Merge all complete file groups
+        run: python3 scripts/merge.py /tmp/files.json
 
       - name: List merged files
         run: |
@@ -80,13 +91,11 @@ jobs:
           retention-days: 7
 
       # Commit only the SHA256 checksums — NOT the large merged files
-      # (keeps repo small but gives permanent proof of integrity)
       - name: Commit checksums to repo
         run: |
           git config user.email "merge-bot@upload-system.local"
           git config user.name  "Upload Merge Bot"
 
-          # Only add .sha256 files — not the actual large merged files
           find merged/ -name "*.sha256" | xargs git add 2>/dev/null || true
 
           git diff --cached --quiet && echo "No checksums to commit" && exit 0

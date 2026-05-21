@@ -12,6 +12,7 @@ for 7 days after the workflow runs.
 import json
 import os
 import sys
+import re
 import hashlib
 
 
@@ -27,14 +28,28 @@ def merge_all(files_json: str):
     print("=" * 56)
 
     for entry in files:
-        name      = entry["original_name"]
-        parts     = sorted(entry["parts"])   # sorted = correct order
-        dest      = entry["merged_dest"]
-        total     = entry["total_parts"]
+        name  = entry["original_name"]
+        parts = entry["parts"]   # Already sorted numerically by scan_uploads.py
+        dest  = entry["merged_dest"]
+        total = entry["total_parts"]
+
+        # Extra safety: re-sort numerically in case list arrived unsorted
+        def part_num(path):
+            m = re.search(r'\.part(\d+)of', os.path.basename(path))
+            return int(m.group(1)) if m else 0
+
+        parts = sorted(parts, key=part_num)
 
         print(f"\nMerging : {name}")
         print(f"Parts   : {total}")
         print(f"Output  : {dest}")
+
+        # Verify parts are in expected order before merging
+        for i, p in enumerate(parts, 1):
+            n = part_num(p)
+            if n != i:
+                print(f"  ERROR: Expected part {i} but got part {n} ({os.path.basename(p)})")
+                sys.exit(1)
 
         # Create destination directory
         os.makedirs(os.path.dirname(dest), exist_ok=True)

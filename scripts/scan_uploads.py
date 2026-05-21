@@ -1,21 +1,14 @@
 #!/usr/bin/env python3
 """
-scan_uploads.py — Fixed version
-Skips files that were already successfully merged in a previous run
-by checking for their .sha256 file in the merged/ folder.
-
-FIX: GitHub Actions GITHUB_OUTPUT requires multiline values (like JSON)
-     to use the heredoc delimiter syntax, not a plain single-line write.
-     Using a plain f.write(f"key={value}\n") silently truncates or breaks
-     JSON payloads that contain quotes/newlines, making downstream jobs
-     receive empty or malformed data.
+scan_uploads.py
+Scans uploads/ for complete file groups (all parts present).
+Skips groups that were already merged (sha256 file exists in merged/).
 """
 
 import os
 import re
 import json
 import sys
-import uuid
 
 
 def scan():
@@ -38,21 +31,20 @@ def scan():
             original_name = info["original_name"]
             total_parts   = info["total_parts"]
             safe_base     = info["safe_base"]
-            ext           = info["ext"]
+            ext            = info["ext"]
 
             print(f"\n[SCAN] Checking: {original_name}")
             print(f"       Expected parts : {total_parts}")
 
-            # ── Skip if already merged successfully ───────────────────────
+            # Skip if already merged successfully
             date_subfolder = root.replace("uploads/", "").replace("uploads\\", "")
             sha256_path = os.path.join("merged", date_subfolder, original_name + ".sha256")
 
             if os.path.exists(sha256_path):
-                print(f"       Status: ALREADY MERGED — skipping (sha256 exists)")
-                print(f"       Proof : {sha256_path}")
+                print(f"       Status: ALREADY MERGED — skipping")
                 continue
 
-            # ── Count parts present ───────────────────────────────────────
+            # Count parts present
             found_parts = []
             for fname in sorted(files):
                 pattern = re.compile(
@@ -61,7 +53,12 @@ def scan():
                 if pattern.match(fname):
                     found_parts.append(os.path.join(root, fname))
 
-            found_parts.sort()
+            # Sort numerically by part number (fixes part10 > part9 ordering bug)
+            def part_num(path):
+                m = re.search(r'\.part(\d+)of', os.path.basename(path))
+                return int(m.group(1)) if m else 0
+
+            found_parts.sort(key=part_num)
             found   = len(found_parts)
             missing = total_parts - found
 
@@ -93,26 +90,18 @@ def scan():
 
     files_json = json.dumps(complete_files)
 
-    # ── Write outputs for GitHub Actions ─────────────────────────────────────
-    # CRITICAL FIX: JSON strings contain quotes and can be multi-line.
-    # GitHub Actions requires the heredoc delimiter syntax for such values:
-    #
-    #   key<<DELIMITER
-    #   value
-    #   DELIMITER
-    #
-    # Using a plain  f.write(f"key={value}\n")  silently truncates the JSON
-    # at the first special character, causing validate/merge jobs to receive
-    # empty or broken input and skip execution entirely.
-    # ─────────────────────────────────────────────────────────────────────────
+    # Write outputs for GitHub Actions
+    # IMPORTANT: Use heredoc/delimiter syntax for JSON values to avoid
+    # shell quoting issues with braces, quotes, and special characters.
     github_output = os.environ.get("GITHUB_OUTPUT", "")
     if github_output:
-        delimiter = uuid.uuid4().hex          # unique random delimiter
         with open(github_output, "a") as f:
-            # Simple boolean — safe as a plain line
             f.write(f"has_complete={'true' if has_complete else 'false'}\n")
-            # JSON payload — MUST use heredoc syntax
-            f.write(f"files_json<<{delimiter}\n{files_json}\n{delimiter}\n")
+            # Multiline heredoc syntax — safe for any JSON content
+            delimiter = "EOF_FILES_JSON"
+            f.write(f"files_json<<{delimiter}\n")
+            f.write(files_json + "\n")
+            f.write(f"{delimiter}\n")
     else:
         print(f"\nhas_complete={has_complete}")
         print(f"files_json={files_json}")

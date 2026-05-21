@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-validate.py — Fixed version
-Issue was: float parsing of "231.6 MB" introduces rounding error vs actual bytes.
-Fix: use 1MB tolerance instead of 1KB, and improve the size comparison logic.
+validate.py
+Validates all complete file groups before merging.
+Accepts either a JSON file path or a raw JSON string as argument.
 """
 
 import json
@@ -75,7 +75,6 @@ def validate(files_json: str):
             print(f"  Difference      : {diff:,} bytes")
 
             # Tolerance = 1MB to account for float rounding in manifest text
-            # e.g. "231.6 MB" stored as text loses some precision vs actual bytes
             TOLERANCE = 1 * 1024 * 1024  # 1MB
             if diff > TOLERANCE:
                 errors.append(
@@ -126,11 +125,6 @@ def validate(files_json: str):
 
 
 def read_manifest_size(manifest_path: str):
-    """
-    Parse total_size from manifest text.
-    e.g. "231.6 MB" → integer bytes
-    Returns None if not found or unparseable.
-    """
     try:
         with open(manifest_path) as f:
             for line in f:
@@ -165,6 +159,16 @@ def fmt(b: int) -> str:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python3 validate.py '<files_json>'")
+        print("Usage: python3 validate.py <path_to_files.json | json_string>")
         sys.exit(1)
-    validate(sys.argv[1])
+
+    arg = sys.argv[1]
+
+    # Accept either a file path or a raw JSON string
+    if os.path.isfile(arg):
+        with open(arg) as f:
+            files_json = f.read().strip()
+    else:
+        files_json = arg
+
+    validate(files_json)
