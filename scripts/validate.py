@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 """
-validate.py
-Validates every complete file group:
-  - All parts exist on disk
-  - No part is empty or suspiciously small
-  - Part sizes are consistent (no truncated upload)
-  - Total assembled size matches manifest
+validate.py — Fixed version
+Issue was: float parsing of "231.6 MB" introduces rounding error vs actual bytes.
+Fix: use 1MB tolerance instead of 1KB, and improve the size comparison logic.
 """
 
 import json
@@ -39,7 +36,7 @@ def validate(files_json: str):
         warnings = []
         part_sizes = []
 
-        # ── Check 1: every part file exists and is non-empty ──────────────
+        # ── Check 1: every part exists and is non-empty ───────────────────
         for i, part_path in enumerate(parts, 1):
             if not os.path.exists(part_path):
                 errors.append(f"Part {i}/{total_parts} MISSING: {os.path.basename(part_path)}")
@@ -51,58 +48,68 @@ def validate(files_json: str):
             if size == 0:
                 errors.append(f"Part {i}/{total_parts} is EMPTY (0 bytes)")
             elif size < 100:
-                warnings.append(f"Part {i}/{total_parts} is suspiciously small ({size} bytes)")
+                warnings.append(f"Part {i}/{total_parts} suspiciously small ({size} bytes)")
             else:
                 print(f"  Part {i:>3}/{total_parts}: {os.path.basename(part_path)}"
                       f"  ({fmt(size)})")
 
-        # ── Check 2: non-final parts should all be the same size ──────────
+        # ── Check 2: non-final parts should all be same size ─────────────
         if len(part_sizes) >= 2:
-            # All parts except last should be same size (they're fixed 20MB chunks)
             non_final = part_sizes[:-1]
             if len(set(non_final)) > 1:
-                min_s = min(non_final)
-                max_s = max(non_final)
-                diff  = max_s - min_s
-                if diff > 1024:   # more than 1KB difference is suspicious
+                diff = max(non_final) - min(non_final)
+                if diff > 1024:
                     warnings.append(
                         f"Non-final parts have inconsistent sizes "
-                        f"(min={fmt(min_s)}, max={fmt(max_s)}) — possible truncation"
+                        f"(min={fmt(min(non_final))}, max={fmt(max(non_final))})"
                     )
 
-        # ── Check 3: total size sanity ────────────────────────────────────
+        # ── Check 3: total size vs manifest ──────────────────────────────
         total_bytes = sum(part_sizes)
-        print(f"  Total assembled size: {fmt(total_bytes)}")
+        print(f"  Total assembled : {fmt(total_bytes)} ({total_bytes:,} bytes)")
 
-        # Compare against manifest if it has size info
-        expected_size = read_manifest_size(manifest)
-        if expected_size and abs(expected_size - total_bytes) > 1024:
-            errors.append(
-                f"Size mismatch: manifest says {fmt(expected_size)} "
-                f"but parts total {fmt(total_bytes)}"
-            )
+        expected_bytes = read_manifest_size(manifest)
+        if expected_bytes:
+            diff = abs(expected_bytes - total_bytes)
+            print(f"  Manifest says   : {fmt(expected_bytes)} ({expected_bytes:,} bytes)")
+            print(f"  Difference      : {diff:,} bytes")
 
-        # ── Check 4: part count matches manifest ──────────────────────────
+            # Tolerance = 1MB to account for float rounding in manifest text
+            # e.g. "231.6 MB" stored as text loses some precision vs actual bytes
+            TOLERANCE = 1 * 1024 * 1024  # 1MB
+            if diff > TOLERANCE:
+                errors.append(
+                    f"Size mismatch too large: "
+                    f"manifest={fmt(expected_bytes)}, "
+                    f"actual={fmt(total_bytes)}, "
+                    f"diff={fmt(diff)}"
+                )
+            elif diff > 0:
+                warnings.append(
+                    f"Tiny size difference of {diff:,} bytes "
+                    f"— normal float rounding in manifest, file is OK"
+                )
+
+        # ── Check 4: part count matches ───────────────────────────────────
         if len(parts) != total_parts:
             errors.append(
-                f"Part count mismatch: found {len(parts)}, "
-                f"manifest says {total_parts}"
+                f"Part count mismatch: found {len(parts)}, expected {total_parts}"
             )
 
-        # ── Results ───────────────────────────────────────────────────────
+        # ── Result ────────────────────────────────────────────────────────
         if errors:
             all_passed = False
             print(f"\n  RESULT: FAILED")
             for e in errors:
-                print(f"    ERROR: {e}")
+                print(f"    ERROR : {e}")
             for w in warnings:
-                print(f"    WARN : {w}")
+                print(f"    WARN  : {w}")
         else:
             print(f"\n  RESULT: PASSED", end="")
             if warnings:
-                print(f" (with {len(warnings)} warning(s))")
+                print(f" (with {len(warnings)} note(s))")
                 for w in warnings:
-                    print(f"    WARN: {w}")
+                    print(f"    NOTE  : {w}")
             else:
                 print(" — all checks OK")
 
@@ -118,32 +125,42 @@ def validate(files_json: str):
         sys.exit(1)
 
 
-def read_manifest_size(manifest_path: str) -> int | None:
-    """Parse total_size from manifest. Returns bytes or None."""
+def read_manifest_size(manifest_path: str):
+    """
+    Parse total_size from manifest text.
+    e.g. "231.6 MB" → integer bytes
+    Returns None if not found or unparseable.
+    """
     try:
         with open(manifest_path) as f:
             for line in f:
-                if line.strip().startswith("total_size"):
-                    _, _, val = line.partition(":")
-                    val = val.strip()
-                    # Parse "231.6 MB" / "50.0 MB" / "500 KB" etc.
-                    parts = val.split()
-                    if len(parts) == 2:
-                        num  = float(parts[0])
-                        unit = parts[1].upper()
-                        multipliers = {"B": 1, "KB": 1024,
-                                       "MB": 1024**2, "GB": 1024**3}
-                        return int(num * multipliers.get(unit, 1))
-    except Exception:
-        pass
+                line = line.strip()
+                if not line.startswith("total_size"):
+                    continue
+                _, _, val = line.partition(":")
+                val = val.strip()
+                parts = val.split()
+                if len(parts) == 2:
+                    num  = float(parts[0])
+                    unit = parts[1].upper()
+                    multipliers = {
+                        "B":  1,
+                        "KB": 1024,
+                        "MB": 1024 ** 2,
+                        "GB": 1024 ** 3,
+                    }
+                    if unit in multipliers:
+                        return int(num * multipliers[unit])
+    except Exception as e:
+        print(f"  [WARN] Could not read manifest size: {e}")
     return None
 
 
 def fmt(b: int) -> str:
-    if b < 1024:        return f"{b} B"
-    if b < 1024**2:     return f"{b/1024:.1f} KB"
-    if b < 1024**3:     return f"{b/1024**2:.1f} MB"
-    return f"{b/1024**3:.2f} GB"
+    if b < 1024:            return f"{b} B"
+    if b < 1024 ** 2:       return f"{b / 1024:.1f} KB"
+    if b < 1024 ** 3:       return f"{b / 1024 ** 2:.1f} MB"
+    return f"{b / 1024 ** 3:.2f} GB"
 
 
 if __name__ == "__main__":
