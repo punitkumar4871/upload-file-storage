@@ -1,0 +1,119 @@
+name: Auto Merge + Validate Files
+
+on:
+  push:
+    paths:
+      - 'uploads/**'
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 1: Scan uploads — find which file groups are complete
+  # ─────────────────────────────────────────────────────────────────────────
+  detect:
+    name: Detect Complete Uploads
+    runs-on: ubuntu-latest
+    outputs:
+      files_json:   ${{ steps.scan.outputs.files_json }}
+      has_complete: ${{ steps.scan.outputs.has_complete }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for complete file groups
+        id: scan
+        run: python3 scripts/scan_uploads.py
+
+      - name: Show scan result
+        run: |
+          echo "Complete groups found: ${{ steps.scan.outputs.has_complete }}"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 2: Validate — all parts present, no corruption, sizes match
+  # ─────────────────────────────────────────────────────────────────────────
+  validate:
+    name: Validate File Integrity
+    runs-on: ubuntu-latest
+    needs: detect
+    if: needs.detect.outputs.has_complete == 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run validation checks
+        run: |
+          python3 scripts/validate.py '${{ needs.detect.outputs.files_json }}'
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 3: Merge — assemble parts → original file → upload as artifact
+  # ─────────────────────────────────────────────────────────────────────────
+  merge:
+    name: Merge Parts into Original File
+    runs-on: ubuntu-latest
+    needs: [detect, validate]
+    if: needs.detect.outputs.has_complete == 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.STORAGE_REPO_TOKEN }}
+
+      - name: Merge all complete file groups
+        run: |
+          python3 scripts/merge.py '${{ needs.detect.outputs.files_json }}'
+
+      - name: List merged files
+        run: |
+          echo "Merged files produced:"
+          find merged/ -type f | while read f; do
+            echo "  $f  ($(du -h $f | cut -f1))"
+          done
+
+      # Upload merged files as downloadable artifacts (7 day retention)
+      # GitHub has no size limit on artifacts — only on repo files
+      - name: Upload merged files as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: merged-files-${{ github.run_number }}
+          path: merged/
+          retention-days: 7
+
+      # Commit only the SHA256 checksums — NOT the large merged files
+      # (keeps repo small but gives permanent proof of integrity)
+      - name: Commit checksums to repo
+        run: |
+          git config user.email "merge-bot@upload-system.local"
+          git config user.name  "Upload Merge Bot"
+
+          # Only add .sha256 files — not the actual large merged files
+          find merged/ -name "*.sha256" | xargs git add 2>/dev/null || true
+
+          git diff --cached --quiet && echo "No checksums to commit" && exit 0
+
+          git commit -m "Checksums: run #${{ github.run_number }} [$(date +'%Y-%m-%d %H:%M')]"
+          git push
+
+      - name: Write job summary
+        run: |
+          echo "## Files Merged — Run #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| File | Size | SHA256 | Download |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------|--------|----------|" >> $GITHUB_STEP_SUMMARY
+
+          find merged/ -type f ! -name "*.sha256" | while read f; do
+            NAME=$(basename "$f")
+            SIZE=$(du -h "$f" | cut -f1)
+            SHA=""
+            if [ -f "${f}.sha256" ]; then
+              SHA=$(cut -d' ' -f1 "${f}.sha256")
+              SHA="${SHA:0:16}..."
+            fi
+            echo "| $NAME | $SIZE | \`$SHA\` | See Artifacts below |" >> $GITHUB_STEP_SUMMARY
+          done
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### How to download" >> $GITHUB_STEP_SUMMARY
+          echo "Scroll down to **Artifacts** section of this run → click **merged-files-${{ github.run_number }}** → extract the ZIP." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> Artifacts expire after **7 days**. Download before then." >> $GITHUB_STEP_SUMMARY
