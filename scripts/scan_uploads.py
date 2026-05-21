@@ -3,12 +3,19 @@
 scan_uploads.py — Fixed version
 Skips files that were already successfully merged in a previous run
 by checking for their .sha256 file in the merged/ folder.
+
+FIX: GitHub Actions GITHUB_OUTPUT requires multiline values (like JSON)
+     to use the heredoc delimiter syntax, not a plain single-line write.
+     Using a plain f.write(f"key={value}\n") silently truncates or breaks
+     JSON payloads that contain quotes/newlines, making downstream jobs
+     receive empty or malformed data.
 """
 
 import os
 import re
 import json
 import sys
+import uuid
 
 
 def scan():
@@ -37,7 +44,6 @@ def scan():
             print(f"       Expected parts : {total_parts}")
 
             # ── Skip if already merged successfully ───────────────────────
-            # Merged files leave a .sha256 checksum in merged/ folder
             date_subfolder = root.replace("uploads/", "").replace("uploads\\", "")
             sha256_path = os.path.join("merged", date_subfolder, original_name + ".sha256")
 
@@ -87,13 +93,26 @@ def scan():
 
     files_json = json.dumps(complete_files)
 
-    # Write outputs for GitHub Actions
+    # ── Write outputs for GitHub Actions ─────────────────────────────────────
+    # CRITICAL FIX: JSON strings contain quotes and can be multi-line.
+    # GitHub Actions requires the heredoc delimiter syntax for such values:
+    #
+    #   key<<DELIMITER
+    #   value
+    #   DELIMITER
+    #
+    # Using a plain  f.write(f"key={value}\n")  silently truncates the JSON
+    # at the first special character, causing validate/merge jobs to receive
+    # empty or broken input and skip execution entirely.
+    # ─────────────────────────────────────────────────────────────────────────
     github_output = os.environ.get("GITHUB_OUTPUT", "")
     if github_output:
+        delimiter = uuid.uuid4().hex          # unique random delimiter
         with open(github_output, "a") as f:
+            # Simple boolean — safe as a plain line
             f.write(f"has_complete={'true' if has_complete else 'false'}\n")
-            # Use multiline output syntax for JSON (avoids issues with quotes)
-            f.write(f"files_json={files_json}\n")
+            # JSON payload — MUST use heredoc syntax
+            f.write(f"files_json<<{delimiter}\n{files_json}\n{delimiter}\n")
     else:
         print(f"\nhas_complete={has_complete}")
         print(f"files_json={files_json}")
