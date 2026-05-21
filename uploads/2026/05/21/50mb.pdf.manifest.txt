@@ -1,0 +1,14 @@
+# Upload Manifest
+original_name : 50mb.pdf
+total_size    : 52.1 MB
+total_parts   : 3
+chunk_size    : 20 MB
+date          : 2026-05-21
+
+# Reassemble on Linux / Mac:
+# cat 50mb.part*.pdf > "50mb.pdf"
+
+# Reassemble on Windows PowerShell:
+# $out = [IO.File]::OpenWrite('50mb.pdf')
+# Get-ChildItem '50mb.part*.pdf' | Sort Name | %{ $b=[IO.File]::ReadAllBytes($_); $out.Write($b,0,$b.Length) }
+# $out.Close()
