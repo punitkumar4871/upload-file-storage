@@ -1,0 +1,14 @@
+# Upload Manifest
+original_name : MSB (1).exe
+total_size    : 231.6 MB
+total_parts   : 12
+chunk_size    : 20 MB
+date          : 2026-05-21
+
+# Reassemble on Linux / Mac:
+# cat MSB_1.part*.exe > "MSB (1).exe"
+
+# Reassemble on Windows PowerShell:
+# $out = [IO.File]::OpenWrite('MSB (1).exe')
+# Get-ChildItem 'MSB_1.part*.exe' | Sort Name | %{ $b=[IO.File]::ReadAllBytes($_); $out.Write($b,0,$b.Length) }
+# $out.Close()
