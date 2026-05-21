@@ -4,6 +4,8 @@ on:
   push:
     paths:
       - 'uploads/**'
+  # ── Manual trigger: lets you re-run the workflow without a new push ──
+  workflow_dispatch:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
@@ -74,6 +76,7 @@ jobs:
           echo "files.json content preview:"
           head -c 200 /tmp/files.json
 
+      # ── FIX: pass the file path, not a JSON string on the command line ──
       - name: Merge all complete file groups
         run: python3 scripts/merge.py /tmp/files.json
 
@@ -81,10 +84,10 @@ jobs:
         run: |
           echo "Merged files produced:"
           find merged/ -type f | while read f; do
-            echo "  $f  ($(du -h $f | cut -f1))"
+            echo "  $f  ($(du -h "$f" | cut -f1))"
           done
 
-      - name: Upload merged files as artifacts
+      - name: Upload merged files as GitHub Artifact
         uses: actions/upload-artifact@v4
         with:
           name: merged-files-${{ github.run_number }}

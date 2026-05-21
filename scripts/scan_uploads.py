@@ -2,7 +2,12 @@
 """
 scan_uploads.py
 Scans uploads/ for complete file groups (all parts present).
-Skips groups that were already merged (sha256 file exists in merged/).
+
+Re-merge logic:
+  - If sha256 does NOT exist  → merge as normal
+  - If sha256 DOES exist BUT any part file is newer than the sha256
+    → a re-upload happened (e.g. failed part replaced) → force re-merge
+  - If sha256 exists and all parts are older → already merged, skip
 """
 
 import os
@@ -15,7 +20,9 @@ def scan():
     complete_files = []
 
     for root, dirs, files in os.walk("uploads"):
-        if "merged" in root:
+        # Don't descend into the merged output folder
+        dirs[:] = [d for d in dirs if d != "merged"]
+        if "merged" in root.split(os.sep):
             continue
 
         manifests = [f for f in files if f.endswith(".manifest.txt")]
@@ -36,13 +43,9 @@ def scan():
             print(f"\n[SCAN] Checking: {original_name}")
             print(f"       Expected parts : {total_parts}")
 
-            # Skip if already merged successfully
-            date_subfolder = root.replace("uploads/", "").replace("uploads\\", "")
+            # Build the sha256 path
+            date_subfolder = root.replace("uploads" + os.sep, "").replace("uploads/", "")
             sha256_path = os.path.join("merged", date_subfolder, original_name + ".sha256")
-
-            if os.path.exists(sha256_path):
-                print(f"       Status: ALREADY MERGED — skipping")
-                continue
 
             # Count parts present
             found_parts = []
@@ -64,22 +67,39 @@ def scan():
 
             print(f"       Parts found    : {found}/{total_parts}")
 
-            if found == total_parts:
-                print(f"       Status: COMPLETE — queuing for validation + merge")
-                merged_dest = os.path.join("merged", date_subfolder, original_name)
-
-                complete_files.append({
-                    "original_name": original_name,
-                    "total_parts":   total_parts,
-                    "safe_base":     safe_base,
-                    "ext":           ext,
-                    "folder":        root,
-                    "parts":         found_parts,
-                    "manifest":      manifest_path,
-                    "merged_dest":   merged_dest,
-                })
-            else:
+            if found != total_parts:
                 print(f"       Status: INCOMPLETE — {missing} part(s) still uploading")
+                continue
+
+            # ── Re-upload detection ───────────────────────────────────────
+            # If sha256 exists, check if any part is newer (= a part was replaced)
+            if os.path.exists(sha256_path):
+                sha256_mtime = os.path.getmtime(sha256_path)
+                newer_parts  = [p for p in found_parts
+                                if os.path.getmtime(p) > sha256_mtime]
+                if newer_parts:
+                    print(f"       Status: RE-UPLOAD DETECTED "
+                          f"({len(newer_parts)} part(s) updated) — re-merging")
+                    # Remove stale sha256 so the merge job writes a fresh one
+                    os.remove(sha256_path)
+                else:
+                    print(f"       Status: ALREADY MERGED — skipping")
+                    continue
+            else:
+                print(f"       Status: COMPLETE — queuing for validation + merge")
+
+            merged_dest = os.path.join("merged", date_subfolder, original_name)
+
+            complete_files.append({
+                "original_name": original_name,
+                "total_parts":   total_parts,
+                "safe_base":     safe_base,
+                "ext":           ext,
+                "folder":        root,
+                "parts":         found_parts,
+                "manifest":      manifest_path,
+                "merged_dest":   merged_dest,
+            })
 
     has_complete = len(complete_files) > 0
 

@@ -4,6 +4,10 @@ merge.py
 Merges all complete file groups into their original single files.
 Output goes into:  merged/uploads/YYYY/MM/DD/<original_filename>
 
+Accepts either:
+  python3 merge.py /tmp/files.json        ← file path  (used by workflow)
+  python3 merge.py '[{"original_name":…}]' ← raw JSON string
+
 GitHub cannot store the merged file (too large) so it is uploaded
 as a GitHub Actions Artifact — downloadable from the Actions tab
 for 7 days after the workflow runs.
@@ -54,9 +58,10 @@ def merge_all(files_json: str):
         # Create destination directory
         os.makedirs(os.path.dirname(dest), exist_ok=True)
 
-        # Remove old merged file if re-running
+        # Remove old merged file if re-running (supports re-upload / part replacement)
         if os.path.exists(dest):
             os.remove(dest)
+            print(f"  (Removed previous merged file for re-merge)")
 
         # SHA256 for integrity verification
         sha = hashlib.sha256()
@@ -108,6 +113,16 @@ def fmt(b: int) -> str:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python3 merge.py '<files_json>'")
+        print("Usage: python3 merge.py <path_to_files.json | json_string>")
         sys.exit(1)
-    merge_all(sys.argv[1])
+
+    arg = sys.argv[1]
+
+    # ── FIX: Accept either a file path or a raw JSON string ──────────────
+    if os.path.isfile(arg):
+        with open(arg, "r") as f:
+            files_json = f.read().strip()
+    else:
+        files_json = arg
+
+    merge_all(files_json)
