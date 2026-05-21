@@ -27,7 +27,7 @@ jobs:
 
       - name: Show scan result
         run: |
-          echo "Complete groups found: ${{ steps.scan.outputs.has_complete }}"
+          echo "has_complete = ${{ steps.scan.outputs.has_complete }}"
 
   # ─────────────────────────────────────────────────────────────────────────
   # JOB 2: Validate — all parts present, no corruption, sizes match
@@ -36,17 +36,18 @@ jobs:
     name: Validate File Integrity
     runs-on: ubuntu-latest
     needs: detect
-    if: needs.detect.outputs.has_complete == 'true'
+    if: ${{ needs.detect.outputs.has_complete == 'true' }}
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Write files_json to temp file
+        env:
+          FILES_JSON: ${{ needs.detect.outputs.files_json }}
         run: |
-          # Write JSON to a file to avoid shell quoting issues entirely
-          cat << 'JSON_DELIM' > /tmp/files.json
-          ${{ needs.detect.outputs.files_json }}
-          JSON_DELIM
+          printf '%s' "$FILES_JSON" > /tmp/files.json
+          echo "files.json content preview:"
+          head -c 200 /tmp/files.json
 
       - name: Run validation checks
         run: python3 scripts/validate.py /tmp/files.json
@@ -58,7 +59,7 @@ jobs:
     name: Merge Parts into Original File
     runs-on: ubuntu-latest
     needs: [detect, validate]
-    if: needs.detect.outputs.has_complete == 'true'
+    if: ${{ needs.detect.outputs.has_complete == 'true' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -66,10 +67,12 @@ jobs:
           token: ${{ secrets.STORAGE_REPO_TOKEN }}
 
       - name: Write files_json to temp file
+        env:
+          FILES_JSON: ${{ needs.detect.outputs.files_json }}
         run: |
-          cat << 'JSON_DELIM' > /tmp/files.json
-          ${{ needs.detect.outputs.files_json }}
-          JSON_DELIM
+          printf '%s' "$FILES_JSON" > /tmp/files.json
+          echo "files.json content preview:"
+          head -c 200 /tmp/files.json
 
       - name: Merge all complete file groups
         run: python3 scripts/merge.py /tmp/files.json
@@ -81,8 +84,6 @@ jobs:
             echo "  $f  ($(du -h $f | cut -f1))"
           done
 
-      # Upload merged files as downloadable artifacts (7 day retention)
-      # GitHub has no size limit on artifacts — only on repo files
       - name: Upload merged files as artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -90,7 +91,6 @@ jobs:
           path: merged/
           retention-days: 7
 
-      # Commit only the SHA256 checksums — NOT the large merged files
       - name: Commit checksums to repo
         run: |
           git config user.email "merge-bot@upload-system.local"
@@ -123,6 +123,5 @@ jobs:
 
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### How to download" >> $GITHUB_STEP_SUMMARY
-          echo "Scroll down to **Artifacts** section of this run → click **merged-files-${{ github.run_number }}** → extract the ZIP." >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> Artifacts expire after **7 days**. Download before then." >> $GITHUB_STEP_SUMMARY
+          echo "Scroll down to **Artifacts** → click **merged-files-${{ github.run_number }}** → extract ZIP." >> $GITHUB_STEP_SUMMARY
+          echo "> Artifacts expire after **7 days**." >> $GITHUB_STEP_SUMMARY
