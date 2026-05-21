@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-scan_uploads.py
-Scans the uploads/ folder and finds file groups where ALL parts are present.
-Outputs a JSON list of complete files for the merge job to process.
+scan_uploads.py — Fixed version
+Skips files that were already successfully merged in a previous run
+by checking for their .sha256 file in the merged/ folder.
 """
 
 import os
@@ -10,16 +10,14 @@ import re
 import json
 import sys
 
+
 def scan():
     complete_files = []
 
-    # Walk every date folder under uploads/
     for root, dirs, files in os.walk("uploads"):
-        # Skip the merged output folder
         if "merged" in root:
             continue
 
-        # Find all manifest files — one per uploaded file
         manifests = [f for f in files if f.endswith(".manifest.txt")]
 
         for manifest_file in manifests:
@@ -36,10 +34,19 @@ def scan():
             ext           = info["ext"]
 
             print(f"\n[SCAN] Checking: {original_name}")
-            print(f"       Expected parts: {total_parts}")
-            print(f"       Safe base name: {safe_base}")
+            print(f"       Expected parts : {total_parts}")
 
-            # Find all part files for this file
+            # ── Skip if already merged successfully ───────────────────────
+            # Merged files leave a .sha256 checksum in merged/ folder
+            date_subfolder = root.replace("uploads/", "").replace("uploads\\", "")
+            sha256_path = os.path.join("merged", date_subfolder, original_name + ".sha256")
+
+            if os.path.exists(sha256_path):
+                print(f"       Status: ALREADY MERGED — skipping (sha256 exists)")
+                print(f"       Proof : {sha256_path}")
+                continue
+
+            # ── Count parts present ───────────────────────────────────────
             found_parts = []
             for fname in sorted(files):
                 pattern = re.compile(
@@ -48,17 +55,15 @@ def scan():
                 if pattern.match(fname):
                     found_parts.append(os.path.join(root, fname))
 
-            found_parts.sort()  # ensure correct order
-            print(f"       Found parts: {len(found_parts)}/{total_parts}")
+            found_parts.sort()
+            found   = len(found_parts)
+            missing = total_parts - found
 
-            if len(found_parts) == total_parts:
-                print(f"       Status: COMPLETE ✓")
+            print(f"       Parts found    : {found}/{total_parts}")
 
-                # Check if already merged
-                merged_path = os.path.join("merged", root.replace("uploads/", ""), original_name)
-                if os.path.exists(merged_path):
-                    print(f"       Already merged — skipping.")
-                    continue
+            if found == total_parts:
+                print(f"       Status: COMPLETE — queuing for validation + merge")
+                merged_dest = os.path.join("merged", date_subfolder, original_name)
 
                 complete_files.append({
                     "original_name": original_name,
@@ -68,31 +73,33 @@ def scan():
                     "folder":        root,
                     "parts":         found_parts,
                     "manifest":      manifest_path,
-                    "merged_dest":   merged_path,
+                    "merged_dest":   merged_dest,
                 })
             else:
-                missing = total_parts - len(found_parts)
-                print(f"       Status: INCOMPLETE — {missing} part(s) still missing")
+                print(f"       Status: INCOMPLETE — {missing} part(s) still uploading")
 
     has_complete = len(complete_files) > 0
-    files_json   = json.dumps(complete_files)
 
-    print(f"\n[SCAN] Complete file groups found: {len(complete_files)}")
-    print(f"[SCAN] Output: {files_json[:200]}...")
+    print(f"\n[SCAN] Files ready to merge : {len(complete_files)}")
+
+    if not has_complete:
+        print("[SCAN] Nothing to do — either still uploading or all already merged.")
+
+    files_json = json.dumps(complete_files)
 
     # Write outputs for GitHub Actions
     github_output = os.environ.get("GITHUB_OUTPUT", "")
     if github_output:
         with open(github_output, "a") as f:
             f.write(f"has_complete={'true' if has_complete else 'false'}\n")
+            # Use multiline output syntax for JSON (avoids issues with quotes)
             f.write(f"files_json={files_json}\n")
     else:
-        print(f"\nfiles_json={files_json}")
-        print(f"has_complete={has_complete}")
+        print(f"\nhas_complete={has_complete}")
+        print(f"files_json={files_json}")
 
 
 def parse_manifest(path):
-    """Parse a .manifest.txt file and return a dict of its fields."""
     try:
         data = {}
         with open(path, "r") as f:
@@ -112,7 +119,6 @@ def parse_manifest(path):
         if total_parts == 0:
             return None
 
-        # Derive safe_base and ext (same logic as GitService.java)
         if "." in original_name:
             base = original_name[:original_name.rfind(".")]
             ext  = original_name[original_name.rfind("."):]
